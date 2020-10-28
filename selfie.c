@@ -211,6 +211,7 @@ uint64_t CHAR_EXCLAMATION  = '!';
 uint64_t CHAR_LT           = '<';
 uint64_t CHAR_GT           = '>';
 uint64_t CHAR_BACKSLASH    =  92; // ASCII code 92 = backslash
+uint64_t CHAR_DOT          = '.';
 
 uint64_t CPUBITWIDTH    = 64; // double word
 uint64_t WORDSIZEINBITS = 32; // single word
@@ -388,13 +389,14 @@ uint64_t SYM_LT           = 24; // <
 uint64_t SYM_LEQ          = 25; // <=
 uint64_t SYM_GT           = 26; // >
 uint64_t SYM_GEQ          = 27; // >=
+uint64_t SYM_ELLIPSIS     = 28; // ...
 
 // symbols for bootstrapping
 
-uint64_t SYM_INT      = 28; // int
-uint64_t SYM_CHAR     = 29; // char
-uint64_t SYM_UNSIGNED = 30; // unsigned
-uint64_t SYM_VA_LIST   = 31; // va_list
+uint64_t SYM_INT      = 29; // int
+uint64_t SYM_CHAR     = 30; // char
+uint64_t SYM_UNSIGNED = 31; // unsigned
+uint64_t SYM_VA_LIST  = 32; // va_list
 
 uint64_t MACRO_VA_START = 0;
 uint64_t MACRO_VA_ARG   = 1;
@@ -465,6 +467,7 @@ void init_scanner () {
   *(SYMBOLS + SYM_LEQ)          = (uint64_t) "<=";
   *(SYMBOLS + SYM_GT)           = (uint64_t) ">";
   *(SYMBOLS + SYM_GEQ)          = (uint64_t) ">=";
+  *(SYMBOLS + SYM_ELLIPSIS)     = (uint64_t) "...";
 
   *(SYMBOLS + SYM_INT)      = (uint64_t) "int";
   *(SYMBOLS + SYM_CHAR)     = (uint64_t) "char";
@@ -517,7 +520,7 @@ uint64_t report_undefined_procedures();
 // |  2 | line#   | source line number
 // |  3 | class   | VARIABLE, BIGINT, STRING, PROCEDURE
 // |  4 | type    | UINT64_T, UINT64STAR_T, VOID_T
-// |  5 | value   | VARIABLE: initial value, PROCEDURE: number of parameters
+// |  5 | value   | VARIABLE: initial value, PROCEDURE: number of parameters if the procedure is variadic, 0 otherwise
 // |  6 | address | VARIABLE, BIGINT, STRING: offset, PROCEDURE: address
 // |  7 | scope   | REG_GP (global), REG_S0 (local)
 // +----+---------+
@@ -543,6 +546,8 @@ void set_type(uint64_t* entry, uint64_t type)          { *(entry + 4) = type; }
 void set_value(uint64_t* entry, uint64_t value)        { *(entry + 5) = value; }
 void set_address(uint64_t* entry, uint64_t address)    { *(entry + 6) = address; }
 void set_scope(uint64_t* entry, uint64_t scope)        { *(entry + 7) = scope; }
+
+uint64_t is_procedure_variadic(uint64_t* entry);
 
 // ------------------------ GLOBAL CONSTANTS -----------------------
 
@@ -608,6 +613,7 @@ uint64_t is_int_or_char_literal();
 uint64_t is_mult_or_div_or_rem();
 uint64_t is_plus_or_minus();
 uint64_t is_comparison();
+uint64_t is_possibly_parameter(uint64_t is_already_variadic);
 
 uint64_t look_for_factor();
 uint64_t look_for_statement();
@@ -3301,6 +3307,21 @@ void get_symbol() {
         } else
           symbol = SYM_GT;
 
+      } else  if (character == CHAR_DOT) {
+        get_character();
+
+        if (character == CHAR_DOT) {
+          get_character();
+
+          if (character == CHAR_DOT) {
+            get_character();
+
+            symbol = SYM_ELLIPSIS;
+          } else
+            syntax_error_character(CHAR_DOT);
+        } else
+          syntax_error_character(CHAR_DOT);
+
       } else {
         print_line_number("syntax error", line_number);
         print("found unknown character ");
@@ -3481,6 +3502,12 @@ uint64_t report_undefined_procedures() {
   return undefined;
 }
 
+uint64_t is_procedure_variadic(uint64_t* entry) {
+  if (get_value(entry) > 0)
+    return 1;
+  return 0;
+}
+
 // -----------------------------------------------------------------
 // ---------------------------- PARSER -----------------------------
 // -----------------------------------------------------------------
@@ -3557,6 +3584,14 @@ uint64_t is_comparison() {
     return 1;
   else
     return 0;
+}
+
+uint64_t is_possibly_parameter(uint64_t is_already_variadic) {
+  if (symbol == SYM_COMMA)
+    if (is_already_variadic == 0)
+      return 1;
+
+  return 0;
 }
 
 uint64_t look_for_factor() {
@@ -4859,6 +4894,7 @@ uint64_t compile_initialization(uint64_t type) {
 
 void compile_procedure(char* procedure, uint64_t type) {
   uint64_t is_undefined;
+  uint64_t variadic_fixed_parameters;
   uint64_t number_of_parameters;
   uint64_t parameters;
   uint64_t number_of_local_variable_bytes;
@@ -4867,6 +4903,7 @@ void compile_procedure(char* procedure, uint64_t type) {
   // assuming procedure is undefined
   is_undefined = 1;
 
+  variadic_fixed_parameters = 0;
   number_of_parameters = 0;
 
   // try parsing formal parameters
@@ -4878,12 +4915,18 @@ void compile_procedure(char* procedure, uint64_t type) {
 
       number_of_parameters = 1;
 
-      while (symbol == SYM_COMMA) {
+      while (is_possibly_parameter(variadic_fixed_parameters)) {
         get_symbol();
 
-        compile_variable(0);
+        if (symbol == SYM_ELLIPSIS) {
+          get_symbol();
 
-        number_of_parameters = number_of_parameters + 1;
+          variadic_fixed_parameters = number_of_parameters;
+        } else {
+          compile_variable(0);
+
+          number_of_parameters = number_of_parameters + 1;
+        }
       }
 
       entry = local_symbol_table;
@@ -4914,7 +4957,7 @@ void compile_procedure(char* procedure, uint64_t type) {
     // this is a procedure declaration
     if (entry == (uint64_t*) 0)
       // procedure never called nor declared nor defined
-      create_symbol_table_entry(GLOBAL_TABLE, procedure, line_number, PROCEDURE, type, number_of_parameters, 0);
+      create_symbol_table_entry(GLOBAL_TABLE, procedure, line_number, PROCEDURE, type, variadic_fixed_parameters, 0);
     else if (get_type(entry) != type)
       // procedure already called, declared, or even defined
       // check return type but otherwise ignore
@@ -4926,7 +4969,7 @@ void compile_procedure(char* procedure, uint64_t type) {
     // this is a procedure definition
     if (entry == (uint64_t*) 0)
       // procedure never called nor declared nor defined
-      create_symbol_table_entry(GLOBAL_TABLE, procedure, line_number, PROCEDURE, type, number_of_parameters, binary_length);
+      create_symbol_table_entry(GLOBAL_TABLE, procedure, line_number, PROCEDURE, type, variadic_fixed_parameters, binary_length);
     else {
       // procedure already called or declared or defined
       if (get_address(entry) != 0) {
@@ -5108,6 +5151,9 @@ void builtin_va_start() {
   va_list_variable = (uint64_t*) 0;
   s0_offset = 0;
 
+  if (is_procedure_variadic(current_function) == 0)
+    syntax_error_message("'va_start' used in function with fixed args");
+
   if (symbol == SYM_IDENTIFIER) {
     va_list_variable = get_scoped_symbol_table_entry(identifier, VARIABLE);
 
@@ -5121,6 +5167,7 @@ void builtin_va_start() {
         if (symbol == SYM_RPARENTHESIS) {
           get_symbol();
 
+          // skip the return address, frame pointer and fixed parameters
           s0_offset = (get_value(current_function) + 2) * REGISTERSIZE;
 
           load_integer(s0_offset);
@@ -5130,12 +5177,14 @@ void builtin_va_start() {
           emit_sd(REG_S0, get_address(va_list_variable), current_temporary());
 
           tfree(1);
-
-          return;
-        }
-      }
-    }
-  }
+        } else
+          syntax_error_symbol(SYM_RPARENTHESIS);
+      } else
+        syntax_error_symbol(SYM_IDENTIFIER);
+    } else
+      syntax_error_symbol(SYM_COMMA);
+  } else
+    syntax_error_symbol(SYM_IDENTIFIER);
 }
 
 uint64_t builtin_va_arg() {
@@ -5146,6 +5195,9 @@ uint64_t builtin_va_arg() {
   va_list_variable = (uint64_t*) 0;
   type = 0;
   va_list_address = 0;
+
+  if (is_procedure_variadic(current_function) == 0)
+    syntax_error_message("'va_arg' used in function with fixed args");
 
   if (symbol == SYM_IDENTIFIER) {
     va_list_variable = get_scoped_symbol_table_entry(identifier, VARIABLE);
@@ -5174,21 +5226,29 @@ uint64_t builtin_va_arg() {
         tfree(1);
 
         return type;
-      }
-    }
-  }
+      } else
+        syntax_error_symbol(SYM_RPARENTHESIS);
+    } else
+      syntax_error_symbol(SYM_COMMA);
+  } else
+    syntax_error_symbol(SYM_IDENTIFIER);
 
   return type;
 }
 
 void builtin_va_end() {
+  if (is_procedure_variadic(current_function) == 0)
+    syntax_error_message("'va_end' used in function with fixed args");
+
   if (symbol == SYM_IDENTIFIER) {
     get_symbol();
 
     if (symbol == SYM_RPARENTHESIS) {
       get_symbol();
-    }
-  }
+    } else
+      syntax_error_symbol(SYM_RPARENTHESIS);
+  } else
+    syntax_error_symbol(SYM_IDENTIFIER);
 }
 
 // -----------------------------------------------------------------

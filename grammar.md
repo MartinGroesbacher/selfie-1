@@ -43,7 +43,7 @@ type              = "uint64_t" [ "*" ] .
 
 cast              = "(" type ")" .
 
-procedure         = "(" [ variable { "," variable } ] ")" ( ";" |
+procedure         = "(" [ variable { "," variable } [ "," "..." ] ] ")" ( ";" |
                     "{" { variable ";" } { statement } "}" ) .
 
 variable          = type identifier .
